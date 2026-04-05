@@ -29,7 +29,22 @@ try {
 
     foreach ($users as $user) {
         $userId = $user['id'];
-        $currency = $user['currency_symbol'];
+        $currencyRaw = trim($user['currency_symbol']);
+
+        // Dompdf standard fonts (Helvetica/Arial) do not perfectly support all African/Asian unicode symbols (like ₵ or ₦).
+        // To guarantee flawless PDF reports globally without "?" glitches, we convert known problematic symbols to their standard 3-letter ISO code explicitly for the email report.
+        $currency = $currencyRaw;
+        if ($currency === '₵' || $currency === 'GH₵')
+            $currency = 'GHS ';
+        elseif ($currency === '₦')
+            $currency = 'NGN ';
+        elseif ($currency === '₹')
+            $currency = 'INR ';
+
+        // Ensure a global default exists
+        if (empty($currency)) {
+            $currency = '$ ';
+        }
 
         // 1. Calculate Total Income for last month
         $stmt = $db->prepare("SELECT SUM(amount) as total FROM transactions WHERE user_id = ? AND type = 'income' AND transaction_date BETWEEN ? AND ?");
@@ -73,7 +88,7 @@ try {
 
         // Recalculate vital statistics
         $txCount = count($incomeTransactions) + count($expenseTransactions);
-        $days = max(1, (int)date('t', strtotime("last month")));
+        $days = max(1, (int) date('t', strtotime("last month")));
         $avgDailyE = number_format($expenses / $days, 2, '.', '');
         $avgDailyI = number_format($income / $days, 2, '.', '');
         $sr = $income > 0 ? number_format((max($income - $expenses, 0) / $income) * 100, 1) : '0';
@@ -176,7 +191,7 @@ try {
             <h2>Income Transaction History (" . count($incomeTransactions) . " transactions)</h2>
             <table>
                 <tr><th class='income-th'>#</th><th class='income-th'>Date</th><th class='income-th'>Category</th><th class='income-th'>Description</th><th class='income-th'>Amount</th></tr>";
-        
+
         $i = 1;
         foreach ($incomeTransactions as $t) {
             $dateFmt = date("M j, Y", strtotime($t['transaction_date']));
@@ -234,17 +249,18 @@ try {
         $dompdf->render();
 
         $pdfOutput = $dompdf->output();
-        
+
         $startLabelStr = date("F j, Y", strtotime($firstDayLastMonth));
         $endLabelStr = date("F j, Y", strtotime($lastDayLastMonth));
         $safeStart = preg_replace('/[, ]+/', '_', $startLabelStr);
         $safeEnd = preg_replace('/[, ]+/', '_', $endLabelStr);
         $pdfFilename = "Borngreat_Report_{$safeStart}_to_{$safeEnd}.pdf";
-        
+
         $tempPdfPath = sys_get_temp_dir() . DIRECTORY_SEPARATOR . $pdfFilename;
         file_put_contents($tempPdfPath, $pdfOutput);
 
         // Send to user with PDF attachment
+        $subject = "{$user['full_name']} Financial Report — $monthLabel";
         $emailBody = "<p>Hi {$user['full_name']},</p><p>Please find attached your Borngreat Accounting financial report for <strong>$monthLabel</strong>.</p><p>Stay financially strong!</p>";
         send_smtp_email($user['email'], $subject, $emailBody, $tempPdfPath, $pdfFilename);
 
