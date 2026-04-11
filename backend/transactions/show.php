@@ -22,10 +22,13 @@ $sql = "SELECT t.*,
         CASE 
             WHEN t.type = 'expense' THEN ec.color 
             ELSE ic.color 
-        END as category_color
+        END as category_color,
+        a.name as account_name,
+        a.type as account_type
         FROM transactions t
         LEFT JOIN expense_categories ec ON t.type = 'expense' AND t.category_id = ec.id
         LEFT JOIN income_categories ic ON t.type = 'income' AND t.category_id = ic.id
+        LEFT JOIN accounts a ON t.account_id = a.id
         WHERE t.id = ? AND t.user_id = ?";
 
 $stmt = $db->prepare($sql);

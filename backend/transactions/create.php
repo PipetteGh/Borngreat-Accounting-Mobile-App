@@ -7,7 +7,7 @@ require_once __DIR__ . '/../helpers/validate.php';
 
 $data = json_decode(file_get_contents('php://input'), true) ?? [];
 
-require_fields($data, ['type', 'amount', 'category_id', 'transaction_date']);
+require_fields($data, ['type', 'amount', 'category_id', 'transaction_date', 'account_id']);
 
 if (!in_array($data['type'], ['income', 'expense'])) {
     json_error('Invalid transaction type');
@@ -23,6 +23,13 @@ if (!validate_date($data['transaction_date'])) {
 
 $db = get_db();
 
+// Check if account exists and belongs to user
+$stmt = $db->prepare("SELECT id FROM accounts WHERE id = ? AND user_id = ?");
+$stmt->execute([$data['account_id'], $userId]);
+if (!$stmt->fetch()) {
+    json_error('Account not found or unauthorized');
+}
+
 // Check if category exists for the given type
 $categoryTable = ($data['type'] === 'expense') ? 'expense_categories' : 'income_categories';
 $stmt = $db->prepare("SELECT id FROM $categoryTable WHERE id = ?");
@@ -31,11 +38,12 @@ if (!$stmt->fetch()) {
     json_error('Category not found for the specified type');
 }
 
-$sql = "INSERT INTO transactions (user_id, type, amount, category_id, description, transaction_date, notes) 
-        VALUES (?, ?, ?, ?, ?, ?, ?)";
+$sql = "INSERT INTO transactions (user_id, account_id, type, amount, category_id, description, transaction_date, notes) 
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
 $stmt = $db->prepare($sql);
 $stmt->execute([
     $userId,
+    $data['account_id'],
     $data['type'],
     $data['amount'],
     $data['category_id'],

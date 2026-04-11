@@ -63,6 +63,17 @@ try {
         $stmt->execute([$userId, $lastDayLastMonth, $userId, $lastDayLastMonth]);
         $balance = $stmt->fetch(PDO::FETCH_ASSOC)['balance'] ?? 0;
 
+        // Fetch Account Balances
+        $stmt = $db->prepare("SELECT a.name, a.type,
+            (a.initial_balance + 
+             COALESCE((SELECT SUM(amount) FROM transactions WHERE account_id = a.id AND type = 'income'), 0) - 
+             COALESCE((SELECT SUM(amount) FROM transactions WHERE account_id = a.id AND type = 'expense'), 0)
+            ) as current_balance
+            FROM accounts a
+            WHERE a.user_id = ?");
+        $stmt->execute([$userId]);
+        $accountBalances = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
         // Fetch full Expense Breakdown
         $stmt = $db->prepare("SELECT sum(amount) as category_total, (SELECT name FROM expense_categories WHERE id = category_id) as category_name FROM transactions WHERE user_id = ? AND type = 'expense' AND transaction_date BETWEEN ? AND ? GROUP BY category_id ORDER BY category_total DESC");
         $stmt->execute([$userId, $firstDayLastMonth, $lastDayLastMonth]);
@@ -73,13 +84,25 @@ try {
         $stmt->execute([$userId, $firstDayLastMonth, $lastDayLastMonth]);
         $incomeBreakdown = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-        // Fetch Income Transactions History
-        $stmt = $db->prepare("SELECT amount, transaction_date, description, (SELECT name FROM income_categories WHERE id = category_id) as category_name FROM transactions WHERE user_id = ? AND type = 'income' AND transaction_date BETWEEN ? AND ? ORDER BY transaction_date ASC");
+        // Fetch Income Transactions History (with account and notes)
+        $stmt = $db->prepare("SELECT t.amount, t.transaction_date, t.description, t.notes, 
+            (SELECT ic.name FROM income_categories ic WHERE ic.id = t.category_id) as category_name, 
+            a.name as account_name 
+            FROM transactions t 
+            LEFT JOIN accounts a ON t.account_id = a.id 
+            WHERE t.user_id = ? AND t.type = 'income' AND t.transaction_date BETWEEN ? AND ? 
+            ORDER BY t.transaction_date ASC");
         $stmt->execute([$userId, $firstDayLastMonth, $lastDayLastMonth]);
         $incomeTransactions = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-        // Fetch Expense Transactions History
-        $stmt = $db->prepare("SELECT amount, transaction_date, description, (SELECT name FROM expense_categories WHERE id = category_id) as category_name FROM transactions WHERE user_id = ? AND type = 'expense' AND transaction_date BETWEEN ? AND ? ORDER BY transaction_date ASC");
+        // Fetch Expense Transactions History (with account and notes)
+        $stmt = $db->prepare("SELECT t.amount, t.transaction_date, t.description, t.notes, 
+            (SELECT ec.name FROM expense_categories ec WHERE ec.id = t.category_id) as category_name, 
+            a.name as account_name 
+            FROM transactions t 
+            LEFT JOIN accounts a ON t.account_id = a.id 
+            WHERE t.user_id = ? AND t.type = 'expense' AND t.transaction_date BETWEEN ? AND ? 
+            ORDER BY t.transaction_date ASC");
         $stmt->execute([$userId, $firstDayLastMonth, $lastDayLastMonth]);
         $expenseTransactions = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
@@ -125,7 +148,7 @@ try {
             <h1>Borngreat Accounting</h1>
             <p class='subtitle'>Comprehensive Financial Report</p>
             <p><strong>Account Holder:</strong> {$user['full_name']} &nbsp; <strong>Email:</strong> {$user['email']}</p>
-            <p><strong>Report Period:</strong> " . date("M j, Y", strtotime($firstDayLastMonth)) . " to " . date("M j, Y", strtotime($lastDayLastMonth)) . " ({$days} days)</p>
+            <p><strong>Report Period:</strong> " . date("l, F j, Y", strtotime($firstDayLastMonth)) . " to " . date("l, F j, Y", strtotime($lastDayLastMonth)) . " ({$days} days)</p>
 
             <h2>Financial Overview</h2>
             <div class='cards'>
@@ -143,6 +166,19 @@ try {
                 <div class='stat' style='margin-right: 1%;'><div class='stat-label'>Top Expense Category</div><div class='stat-val'>{$topExpenseName}</div></div>
                 <div class='stat'><div class='stat-label'>Top Income Source</div><div class='stat-val'>{$topIncomeName}</div></div>
             </div>
+
+            <h2>Account Balances</h2>
+            <table>
+                <tr><th>Account Name</th><th>Type</th><th>Current Balance</th></tr>";
+
+        foreach ($accountBalances as $ab) {
+            $bodyHtml .= "<tr><td>{$ab['name']}</td><td>" . ucfirst($ab['type']) . "</td><td style='font-weight:bold;'>{$currency}" . number_format($ab['current_balance'], 2) . "</td></tr>";
+        }
+        if (empty($accountBalances)) {
+            $bodyHtml .= "<tr><td colspan='3' style='text-align:center;color:#8E92A8;'>No accounts found</td></tr>";
+        }
+
+        $bodyHtml .= "</table>
 
             <h2>Expense Breakdown by Category</h2>
             <table>
@@ -190,21 +226,23 @@ try {
 
             <h2>Income Transaction History (" . count($incomeTransactions) . " transactions)</h2>
             <table>
-                <tr><th class='income-th'>#</th><th class='income-th'>Date</th><th class='income-th'>Category</th><th class='income-th'>Description</th><th class='income-th'>Amount</th></tr>";
+                <tr><th class='income-th'>#</th><th class='income-th'>Date</th><th class='income-th'>Account</th><th class='income-th'>Category</th><th class='income-th'>Description</th><th class='income-th'>Notes</th><th class='income-th'>Amount</th></tr>";
 
         $i = 1;
         foreach ($incomeTransactions as $t) {
-            $dateFmt = date("M j, Y", strtotime($t['transaction_date']));
+            $dateFmt = date("l, F j, Y", strtotime($t['transaction_date']));
+            $acc = $t['account_name'] ?: 'N/A';
             $cat = $t['category_name'] ?: '-';
             $desc = $t['description'] ?: '-';
+            $notes = $t['notes'] ?: '-';
             $amt = number_format($t['amount'], 2);
-            $bodyHtml .= "<tr><td>{$i}</td><td>{$dateFmt}</td><td>{$cat}</td><td>{$desc}</td><td style='color:#26c986;font-weight:bold;'>+{$currency}{$amt}</td></tr>";
+            $bodyHtml .= "<tr><td>{$i}</td><td>{$dateFmt}</td><td>{$acc}</td><td>{$cat}</td><td>{$desc}</td><td>{$notes}</td><td style='color:#26c986;font-weight:bold;'>+{$currency}{$amt}</td></tr>";
             $i++;
         }
         if (empty($incomeTransactions)) {
-            $bodyHtml .= "<tr><td colspan='5' style='text-align:center;color:#8E92A8;'>No income transactions in this period</td></tr>";
+            $bodyHtml .= "<tr><td colspan='7' style='text-align:center;color:#8E92A8;'>No income transactions in this period</td></tr>";
         } else {
-            $bodyHtml .= "<tr class='total-row income-total'><td></td><td colspan='3'>Total Income</td><td style='color:#26c986;'>+{$currency}" . number_format($income, 2) . "</td></tr>";
+            $bodyHtml .= "<tr class='total-row income-total'><td></td><td colspan='5'>Total Income</td><td style='color:#26c986;'>+{$currency}" . number_format($income, 2) . "</td></tr>";
         }
 
         $bodyHtml .= "
@@ -212,21 +250,23 @@ try {
 
             <h2>Expense Transaction History (" . count($expenseTransactions) . " transactions)</h2>
             <table>
-                <tr><th class='expense-th'>#</th><th class='expense-th'>Date</th><th class='expense-th'>Category</th><th class='expense-th'>Description</th><th class='expense-th'>Amount</th></tr>";
+                <tr><th class='expense-th'>#</th><th class='expense-th'>Date</th><th class='expense-th'>Account</th><th class='expense-th'>Category</th><th class='expense-th'>Description</th><th class='expense-th'>Notes</th><th class='expense-th'>Amount</th></tr>";
 
         $i = 1;
         foreach ($expenseTransactions as $t) {
-            $dateFmt = date("M j, Y", strtotime($t['transaction_date']));
+            $dateFmt = date("l, F j, Y", strtotime($t['transaction_date']));
+            $acc = $t['account_name'] ?: 'N/A';
             $cat = $t['category_name'] ?: '-';
             $desc = $t['description'] ?: '-';
+            $notes = $t['notes'] ?: '-';
             $amt = number_format($t['amount'], 2);
-            $bodyHtml .= "<tr><td>{$i}</td><td>{$dateFmt}</td><td>{$cat}</td><td>{$desc}</td><td style='color:#ff914d;font-weight:bold;'>-{$currency}{$amt}</td></tr>";
+            $bodyHtml .= "<tr><td>{$i}</td><td>{$dateFmt}</td><td>{$acc}</td><td>{$cat}</td><td>{$desc}</td><td>{$notes}</td><td style='color:#ff914d;font-weight:bold;'>-{$currency}{$amt}</td></tr>";
             $i++;
         }
         if (empty($expenseTransactions)) {
-            $bodyHtml .= "<tr><td colspan='5' style='text-align:center;color:#8E92A8;'>No expense transactions in this period</td></tr>";
+            $bodyHtml .= "<tr><td colspan='7' style='text-align:center;color:#8E92A8;'>No expense transactions in this period</td></tr>";
         } else {
-            $bodyHtml .= "<tr class='total-row expense-total'><td></td><td colspan='3'>Total Expenses</td><td style='color:#ff914d;'>-{$currency}" . number_format($expenses, 2) . "</td></tr>";
+            $bodyHtml .= "<tr class='total-row expense-total'><td></td><td colspan='5'>Total Expenses</td><td style='color:#ff914d;'>-{$currency}" . number_format($expenses, 2) . "</td></tr>";
         }
 
         $genDate = date('F j, Y \a\t g:i A');

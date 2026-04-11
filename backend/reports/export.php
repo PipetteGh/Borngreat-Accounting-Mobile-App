@@ -8,7 +8,7 @@ $start_date = $_GET['start_date'] ?? date('Y-m-01');
 $end_date = $_GET['end_date'] ?? date('Y-m-d');
 $format = $_GET['format'] ?? 'csv';
 
-if ($format !== 'csv') {
+if (!in_array($format, ['csv', 'pdf'])) {
     json_error('Unsupported export format');
 }
 
@@ -19,6 +19,7 @@ $userStmt = $db->prepare("SELECT full_name, email, currency_symbol FROM users WH
 $userStmt->execute([$userId]);
 $userInfo = $userStmt->fetch();
 $currency = $userInfo['currency_symbol'] ?? '$';
+if ($format === 'pdf' && ($currency === '₵' || $currency === 'GH₵')) $currency = 'GH₵'; // Dompdf supports UTF-8 if configured
 
 // Get summary
 $summSql = "SELECT 
@@ -47,75 +48,107 @@ $catStmt = $db->prepare($catSql);
 $catStmt->execute([$userId, $start_date, $end_date]);
 $categories = $catStmt->fetchAll();
 
-header('Content-Type: text/csv; charset=utf-8');
-header('Content-Disposition: attachment; filename="financial_report_' . $start_date . '_to_' . $end_date . '.csv"');
-
-$output = fopen('php://output', 'w');
-
-// Report Header
-fputcsv($output, ['BORNGREAT ACCOUNTING — FINANCIAL REPORT']);
-fputcsv($output, ['Generated for:', $userInfo['full_name'], 'Email:', $userInfo['email']]);
-fputcsv($output, ['Period:', $start_date . ' to ' . $end_date]);
-fputcsv($output, []);
-
-// Summary Section
-fputcsv($output, ['═══════════ FINANCIAL SUMMARY ═══════════']);
-fputcsv($output, ['Total Income', $currency . number_format($totalIncome, 2)]);
-fputcsv($output, ['Total Expense', $currency . number_format($totalExpense, 2)]);
-fputcsv($output, ['Net Balance', $currency . number_format($balance, 2)]);
-fputcsv($output, ['Savings Rate', $savingsRate . '%']);
-fputcsv($output, ['Total Transactions', $summ['transaction_count']]);
-$days = max(1, (strtotime($end_date) - strtotime($start_date)) / 86400);
-fputcsv($output, ['Avg. Daily Expense', $currency . number_format($totalExpense / $days, 2)]);
-fputcsv($output, ['Avg. Daily Income', $currency . number_format($totalIncome / $days, 2)]);
-fputcsv($output, []);
-
-// Category Breakdown
-fputcsv($output, ['═══════════ EXPENSE BREAKDOWN ═══════════']);
-fputcsv($output, ['Category', 'Total', 'Transactions', '% of Total']);
-foreach ($categories as $cat) {
-    if ($cat['type'] === 'expense') {
-        $pct = $totalExpense > 0 ? round(($cat['cat_total'] / $totalExpense) * 100, 1) : 0;
-        fputcsv($output, [$cat['category_name'], $currency . number_format($cat['cat_total'], 2), $cat['cat_count'], $pct . '%']);
-    }
-}
-fputcsv($output, []);
-
-fputcsv($output, ['═══════════ INCOME BREAKDOWN ═══════════']);
-fputcsv($output, ['Category', 'Total', 'Transactions', '% of Total']);
-foreach ($categories as $cat) {
-    if ($cat['type'] === 'income') {
-        $pct = $totalIncome > 0 ? round(($cat['cat_total'] / $totalIncome) * 100, 1) : 0;
-        fputcsv($output, [$cat['category_name'], $currency . number_format($cat['cat_total'], 2), $cat['cat_count'], $pct . '%']);
-    }
-}
-fputcsv($output, []);
-
-// Transaction Detail
-fputcsv($output, ['═══════════ TRANSACTION DETAILS ═══════════']);
-fputcsv($output, ['Date', 'Type', 'Category', 'Description', 'Amount', 'Notes']);
-
+// Get Detail Transactions
 $sql = "SELECT t.*, 
-        CASE WHEN t.type = 'expense' THEN ec.name ELSE ic.name END as category_name
+        CASE WHEN t.type = 'expense' THEN ec.name ELSE ic.name END as category_name,
+        a.name as account_name
         FROM transactions t
         LEFT JOIN expense_categories ec ON t.type = 'expense' AND t.category_id = ec.id
         LEFT JOIN income_categories ic ON t.type = 'income' AND t.category_id = ic.id
+        LEFT JOIN accounts a ON t.account_id = a.id
         WHERE t.user_id = ? AND t.transaction_date BETWEEN ? AND ?
         ORDER BY transaction_date ASC";
 
 $stmt = $db->prepare($sql);
 $stmt->execute([$userId, $start_date, $end_date]);
+$transactions = $stmt->fetchAll();
 
-while ($row = $stmt->fetch()) {
-    fputcsv($output, [
-        $row['transaction_date'],
-        ucfirst($row['type']),
-        $row['category_name'],
-        $row['description'],
-        $currency . number_format($row['amount'], 2),
-        $row['notes']
-    ]);
+if ($format === 'csv') {
+    header('Content-Type: text/csv; charset=utf-8');
+    header('Content-Disposition: attachment; filename="financial_report_' . $start_date . '_to_' . $end_date . '.csv"');
+    
+    $output = fopen('php://output', 'w');
+    fputcsv($output, ['BORNGREAT ACCOUNTING — FINANCIAL REPORT']);
+    fputcsv($output, ['Generated for:', $userInfo['full_name'], 'Email:', $userInfo['email']]);
+    fputcsv($output, ['Period:', $start_date . ' to ' . $end_date]);
+    fputcsv($output, []);
+    
+    fputcsv($output, ['═══════════ FINANCIAL SUMMARY ═══════════']);
+    fputcsv($output, ['Total Income', $currency . number_format($totalIncome, 2)]);
+    fputcsv($output, ['Total Expense', $currency . number_format($totalExpense, 2)]);
+    fputcsv($output, ['Net Balance', $currency . number_format($balance, 2)]);
+    fputcsv($output, ['Savings Rate', $savingsRate . '%']);
+    fputcsv($output, []);
+    
+    fputcsv($output, ['═══════════ TRANSACTION DETAILS ═══════════']);
+    fputcsv($output, ['Date', 'Type', 'Account', 'Category', 'Description', 'Amount']);
+    foreach ($transactions as $row) {
+        fputcsv($output, [
+            date("l, F j, Y", strtotime($row['transaction_date'])),
+            ucfirst($row['type']),
+            $row['account_name'] ?? 'N/A',
+            $row['category_name'],
+            $row['description'],
+            $currency . number_format($row['amount'], 2)
+        ]);
+    }
+    fclose($output);
+    exit;
+} else if ($format === 'pdf') {
+    require_once __DIR__ . '/../vendor/autoload.php';
+    $dompdf = new \Dompdf\Dompdf();
+    
+    $html = "<html><head><style>
+        body { font-family: DejaVu Sans, sans-serif; font-size: 12px; color: #1B1B2F; }
+        h1 { color: #7c5dfa; text-align: center; }
+        .header-table { width: 100%; margin-bottom: 20px; border-bottom: 1px solid #7c5dfa; padding-bottom: 10px; }
+        .summary-box { background: #F4F6FA; padding: 15px; border-radius: 8px; margin-bottom: 20px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        th { background: #7c5dfa; color: #fff; padding: 8px; text-align: left; }
+        td { padding: 8px; border-bottom: 1px solid #EAECEF; }
+        .income { color: #26c986; font-weight: bold; }
+        .expense { color: #ff914d; font-weight: bold; }
+    </style></head><body>
+        <h1>Borngreat Accounting</h1>
+        <table class='header-table'>
+            <tr><td><strong>Report For:</strong> {$userInfo['full_name']}</td><td align='right'><strong>Period:</strong> {$start_date} to {$end_date}</td></tr>
+        </table>
+        
+        <div class='summary-box'>
+            <h3>Financial Summary</h3>
+            <table style='background: none;'>
+                <tr><td>Total Income:</td><td class='income'>{$currency}" . number_format($totalIncome, 2) . "</td></tr>
+                <tr><td>Total Expense:</td><td class='expense'>{$currency}" . number_format($totalExpense, 2) . "</td></tr>
+                <tr><td>Net Balance:</td><td style='font-weight:bold;'>{$currency}" . number_format($balance, 2) . "</td></tr>
+            </table>
+        </div>
+        
+        <h3>Transaction Details</h3>
+        <table>
+            <thead><tr><th>Date</th><th>Category</th><th>Description</th><th>Amount</th></tr></thead>
+            <tbody>";
+    
+    foreach ($transactions as $t) {
+        $dateFmt = date("l, F j, Y", strtotime($t['transaction_date']));
+        $class = $t['type'] === 'income' ? 'income' : 'expense';
+        $prefix = $t['type'] === 'income' ? '+' : '-';
+        $html .= "<tr>
+            <td>{$dateFmt}</td>
+            <td>{$t['category_name']}</td>
+            <td>{$t['description']}</td>
+            <td class='{$class}'>{$prefix}{$currency}" . number_format($t['amount'], 2) . "</td>
+        </tr>";
+    }
+    
+    if (empty($transactions)) {
+        $html .= "<tr><td colspan='4' align='center'>No transactions found</td></tr>";
+    }
+    
+    $html .= "</tbody></table></body></html>";
+    
+    $dompdf->loadHtml($html);
+    $dompdf->setPaper('A4', 'portrait');
+    $dompdf->render();
+    $dompdf->stream("financial_report_{$start_date}.pdf", ["Attachment" => true]);
+    exit;
 }
-
-fclose($output);
-exit;

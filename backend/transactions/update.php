@@ -21,7 +21,7 @@ if (!$existing) {
     json_error('Transaction not found or access denied', 404);
 }
 
-$allowedFields = ['amount', 'category_id', 'description', 'transaction_date', 'notes'];
+$allowedFields = ['amount', 'category_id', 'description', 'transaction_date', 'notes', 'account_id'];
 $updates = [];
 $params = [];
 
@@ -33,6 +33,14 @@ foreach ($allowedFields as $field) {
         }
         if ($field === 'transaction_date' && !validate_date($data[$field])) {
             json_error('Invalid transaction date format (Y-m-d)');
+        }
+        if ($field === 'account_id') {
+            // Check if account exists and belongs to user
+            $accStmt = $db->prepare("SELECT id FROM accounts WHERE id = ? AND user_id = ?");
+            $accStmt->execute([$data['account_id'], $userId]);
+            if (!$accStmt->fetch()) {
+                json_error('Account not found or unauthorized');
+            }
         }
         if ($field === 'category_id') {
              // Check if category exists for the current transaction type

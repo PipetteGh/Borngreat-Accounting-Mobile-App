@@ -43,6 +43,17 @@ $stmtUnread = $db->prepare("SELECT COUNT(*) as unread FROM notifications WHERE u
 $stmtUnread->execute([$userId]);
 $unreadCount = (int)($stmtUnread->fetch()['unread'] ?? 0);
 
+// Fetch account balances
+$stmtAccounts = $db->prepare("SELECT a.id, a.name, a.type,
+            (a.initial_balance + 
+             COALESCE((SELECT SUM(amount) FROM transactions WHERE account_id = a.id AND type = 'income'), 0) - 
+             COALESCE((SELECT SUM(amount) FROM transactions WHERE account_id = a.id AND type = 'expense'), 0)
+            ) as current_balance
+            FROM accounts a
+            WHERE a.user_id = ?");
+$stmtAccounts->execute([$userId]);
+$accounts = $stmtAccounts->fetchAll();
+
 json_success([
     'total_income' => $total_income,
     'total_expense' => $total_expense,
@@ -50,5 +61,6 @@ json_success([
     'transaction_count' => (int)$summary['transaction_count'],
     'period_start' => $period_start,
     'period_end' => $period_end,
-    'unread_notifications' => $unreadCount
+    'unread_notifications' => $unreadCount,
+    'account_balances' => $accounts
 ]);

@@ -7,25 +7,25 @@ require_once __DIR__ . '/../config/database.php';
 $db = get_db();
 
 $params = [$userId];
-$where = ["user_id = ?"];
+$where = ["t.user_id = ?"];
 
 if (isset($_GET['type']) && in_array($_GET['type'], ['income', 'expense'])) {
-    $where[] = "type = ?";
+    $where[] = "t.type = ?";
     $params[] = $_GET['type'];
 }
 
 if (isset($_GET['start_date']) && !empty($_GET['start_date'])) {
-    $where[] = "transaction_date >= ?";
+    $where[] = "t.transaction_date >= ?";
     $params[] = $_GET['start_date'];
 }
 
 if (isset($_GET['end_date']) && !empty($_GET['end_date'])) {
-    $where[] = "transaction_date <= ?";
+    $where[] = "t.transaction_date <= ?";
     $params[] = $_GET['end_date'];
 }
 
 if (isset($_GET['category_id']) && !empty($_GET['category_id'])) {
-    $where[] = "category_id = ?";
+    $where[] = "t.category_id = ?";
     $params[] = $_GET['category_id'];
 }
 
@@ -47,10 +47,13 @@ $sql = "SELECT t.*,
         CASE 
             WHEN t.type = 'expense' THEN ec.color 
             ELSE ic.color 
-        END as category_color
+        END as category_color,
+        a.name as account_name,
+        a.type as account_type
         FROM transactions t
         LEFT JOIN expense_categories ec ON t.type = 'expense' AND t.category_id = ec.id
         LEFT JOIN income_categories ic ON t.type = 'income' AND t.category_id = ic.id
+        LEFT JOIN accounts a ON t.account_id = a.id
         WHERE $whereSql
         ORDER BY transaction_date DESC, created_at DESC
         LIMIT $limit OFFSET $offset";
@@ -60,7 +63,7 @@ $stmt->execute($params);
 $transactions = $stmt->fetchAll();
 
 // Get total count for pagination
-$countSql = "SELECT COUNT(*) FROM transactions WHERE $whereSql";
+$countSql = "SELECT COUNT(*) FROM transactions t WHERE $whereSql";
 $countStmt = $db->prepare($countSql);
 // Re-bind params for count query (remove limit/offset params)
 $countStmt->execute($params);
